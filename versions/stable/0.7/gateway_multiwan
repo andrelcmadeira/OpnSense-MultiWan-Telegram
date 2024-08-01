@@ -89,7 +89,8 @@ function sendTelegram($gatewayStatuses) {
         $message .= (USE_ICONS ? ($iconMapping[$statusMapping[$details['status']] ?? '3'] ?? '') : "") . " {$gateway}: " . ($statusTranslation[$details['status']] ?? 'unknown') . "\n";
     }
 
-    shell_exec(TELEGRAM_SCRIPT_PATH . " \"" . escapeshellcmd($message) . "\"");
+    $encodedMessage = urlencode($message);
+    shell_exec(TELEGRAM_SCRIPT_PATH . " \"" . escapeshellcmd($encodedMessage) . "\"");
 }
 
 exit($statusExit);
