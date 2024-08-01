@@ -1,0 +1,97 @@
+#!/usr/local/bin/php
+<?php
+
+/**
+ * Author: Maciel Meireles
+ * Date: 19/10/2023
+ * Version: 0.7 (beta)
+ * Description: Monitors gateway statuses (up to 4) and generates an exit code based on the combination of gateway statuses. It also provides a summary of all gateways at the end.
+ * Credits: Luciano Rodrigues (pfSense Ninja Course).
+ */
+
+require_once('config.inc');
+require_once('interfaces.inc');
+require_once('util.inc');
+
+// Define constants
+define("MAX_GATEWAYS", 4); // Maximum number of gateways to monitor
+define("EXIT_CODE_TOO_MANY_GATEWAYS", 256); // Exit code when there are too many gateways
+define("SHOW_DETAILS", true); // Whether to show details about each gateway
+define("SEND_TELEGRAM", true); // Whether to send a Telegram message with the gateway statuses
+define("USE_ICONS", true); // Whether to use icons in the Telegram message and details output
+define("TELEGRAM_SCRIPT_PATH", "/usr/local/opnsense/scripts/OPNsense/Monit/sendTelegram.sh"); // Path to the Telegram script
+define("LAST_STATUS_FILE", __DIR__ . "/gateway_multiwan_laststatus.txt"); // File to store the last status of each gateway
+
+$ignoredGateways = ["gateway1", "gateway2"]; // Add gateway names you want to ignore
+$statusMapping = ['none' => '0', 'loss' => '1', 'down' => '2'];
+$iconMapping = ['0' => '🟢', '1' => '🟡', '2' => '🔴', '3' => '❓'];
+$statusTranslation = ['none' => 'online', 'loss' => 'packet loss', 'down' => 'offline'];
+
+// Get the current status of each gateway
+$gatewayStatuses = return_gateways_status(true);
+
+if (count($gatewayStatuses) > MAX_GATEWAYS) {
+    echo "More than " . MAX_GATEWAYS . " gateways are not supported by this script.";
+    exit(EXIT_CODE_TOO_MANY_GATEWAYS);
+}
+
+foreach ($ignoredGateways as $ignoredGateway) {
+    unset($gatewayStatuses[$ignoredGateway]);
+}
+
+$statusNumeric = "";
+$statusBinary = "";
+foreach ($gatewayStatuses as $status) {
+    $mappedStatus = $statusMapping[$status['status']] ?? '3';
+    $statusNumeric .= $mappedStatus;
+    $statusBinary .= str_pad(decbin($mappedStatus), 2, '0', STR_PAD_LEFT);
+}
+
+$statusExit = bindec($statusBinary);
+
+$lockFile = fopen(LAST_STATUS_FILE, 'c+');
+if ($lockFile && flock($lockFile, LOCK_EX)) {
+    $lastStatusContent = file_get_contents(LAST_STATUS_FILE);
+    $lastStatusExit = (strpos($lastStatusContent, "statusExit=") !== false) ? intval(substr(strstr($lastStatusContent, "statusExit="), 11)) : -1;
+
+    if ($lastStatusExit !== $statusExit) {
+        sendTelegram($gatewayStatuses);
+        ftruncate($lockFile, 0);
+        fseek($lockFile, 0);
+        foreach ($gatewayStatuses as $gateway => $details) {
+            fwrite($lockFile, "{$gateway}=" . ($statusTranslation[$details['status']] ?? 'unknown') . "\n");
+        }
+        fwrite($lockFile, "statusExit=" . $statusExit . "\n\n");
+    }
+
+    flock($lockFile, LOCK_UN);
+}
+
+fclose($lockFile);
+
+// Show details about each gateway
+if (SHOW_DETAILS) {
+    foreach ($gatewayStatuses as $gateway => $details) {
+        echo (USE_ICONS ? ($iconMapping[$statusMapping[$details['status']] ?? '3'] ?? '') : "") . " {$gateway}: " . ($statusTranslation[$details['status']] ?? 'unknown') . "\n";
+    }
+}
+
+echo "\nExit Status: {$statusExit}\n";
+
+// Function to send a Telegram message with the status of each gateway
+function sendTelegram($gatewayStatuses) {
+    global $iconMapping, $statusMapping, $statusTranslation;
+
+    $hostname = gethostname();
+    $message = "{$hostname} | Gateway Status\n";
+    
+    foreach ($gatewayStatuses as $gateway => $details) {
+        $message .= (USE_ICONS ? ($iconMapping[$statusMapping[$details['status']] ?? '3'] ?? '') : "") . " {$gateway}: " . ($statusTranslation[$details['status']] ?? 'unknown') . "\n";
+    }
+
+    shell_exec(TELEGRAM_SCRIPT_PATH . " \"" . escapeshellcmd($message) . "\"");
+}
+
+exit($statusExit);
+
+?>
